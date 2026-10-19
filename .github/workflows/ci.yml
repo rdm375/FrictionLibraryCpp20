@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DFRICTION_BUILD_BENCHMARKS=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Install and test downstream consumer
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/friction-prefix"
+          cmake -S tests/consumer -B build-consumer \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/friction-prefix"
+          cmake --build build-consumer --parallel 2
+          ctest --test-dir build-consumer --output-on-failure
+      - name: Build CPack archive
+        run: |
+          cpack --config build/CPackConfig.cmake -G TGZ
+          package=$(find . -maxdepth 1 -type f -name '*.tar.gz' -print -quit)
+          test -n "$package"
+          tar -tzf "$package"
