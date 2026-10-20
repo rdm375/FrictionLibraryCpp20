@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Richard Myers
+
 #include "friction/adaptive_tensor_surrogate.hpp"
+#include "friction/adaptive_bilinear_tensor_surrogate.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,10 +36,6 @@ double time_pass(const char* label,const std::vector<Point>& points,F&& f) {
     }
     std::sort(seconds.begin(),seconds.end());
     const double median_seconds=seconds[repetitions/2];
-    // A single volatile sink prevents dead-code elimination without forcing a
-    // volatile load/store on every iteration (which dominated short kernels).
-    static volatile double benchmark_sink=0.0;
-    benchmark_sink=checksum;
     std::cout<<std::left<<std::setw(28)<<label<<std::right<<std::fixed<<std::setprecision(2)
              <<(static_cast<double>(points.size())/median_seconds/1.0e6)<<" M eval/s (median of "
              <<repetitions<<" passes)"
@@ -46,6 +46,12 @@ double time_pass(const char* label,const std::vector<Point>& points,F&& f) {
 
 int main() {
     friction::surrogate::AdaptiveTensorConfig config;
+    friction::surrogate::AdaptiveBilinearColebrookTensor bilinear_table(config);
+    const auto bilinear_build_start=Clock::now();
+    const auto bilinear_report=bilinear_table.build();
+    const double bilinear_build_seconds=std::chrono::duration<double>(
+        Clock::now()-bilinear_build_start).count();
+
     friction::surrogate::AdaptiveColebrookTensor table(config);
     const auto build_start=Clock::now();
     const auto report=table.build();
@@ -57,6 +63,13 @@ int main() {
              <<report.refinement_rounds<<" refinement rounds, build="
              <<std::fixed<<std::setprecision(3)<<build_seconds<<" s, final indicator="
              <<report.largest_unresolved_indicator<<'\n';
+    std::cout<<"Adaptive bilinear tensor: "<<bilinear_report.grid_points<<" nodes ("
+             <<bilinear_report.reynolds_axis_points<<" x "
+             <<bilinear_report.roughness_axis_points<<"), "
+             <<std::fixed<<std::setprecision(2)
+             <<(static_cast<double>(bilinear_report.estimated_storage_bytes)/(1024.0*1024.0))
+             <<" MiB, "<<bilinear_report.refinement_rounds<<" refinement rounds, build="
+             <<std::fixed<<std::setprecision(3)<<bilinear_build_seconds<<" s\n";
 
     std::vector<Point> points;
     points.reserve(count);
@@ -74,9 +87,14 @@ int main() {
             return friction::analytic::darcy_friction_factor(
                 re,rr,friction::Correlation::colebrook);
         });
+    const double bilinear_seconds=time_pass("Adaptive bilinear + gradients",points,
+        [&bilinear_table](double re,double rr) {
+            return bilinear_table.evaluate(re,rr).derivatives;
+        });
     const double table_seconds=time_pass("Tensor table + gradients",points,
         [&table](double re,double rr) { return table.evaluate(re,rr).derivatives; });
-    std::cout<<"Throughput ratio (table/direct): "<<std::fixed<<std::setprecision(3)
+    std::cout<<"Throughput ratios (bilinear/direct, bicubic/direct): "
+             <<std::fixed<<std::setprecision(3)<<direct_seconds/bilinear_seconds<<"x, "
              <<direct_seconds/table_seconds<<"x\n";
 
     // In a pipe solve, roughness is normally fixed across the flow evaluations

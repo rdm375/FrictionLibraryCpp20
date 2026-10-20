@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Richard Myers
 
 #include <cuda_runtime.h>
+#include <friction/colebrook.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -65,6 +66,39 @@ __host__ __device__ double swamee_jain(double re, double rr) {
     return 0.25 / (l * l);
 }
 
+__host__ __device__ double colebrook_fixed_point(double re, double rr) {
+    constexpr double tolerance = 8.8817841970012523234e-16;
+    double y = 7.0;
+    for (int iteration = 0; iteration < 128; ++iteration) {
+        const double argument = rr / 3.7 + (2.51 / re) * y;
+        const double next = -2.0 * log10(argument);
+        if (!(next > 0.0) || !isfinite(next)) return NAN;
+        if (fabs(next - y) <= tolerance * fmax(1.0, fabs(next)))
+            return 1.0 / (next * next);
+        y = next;
+    }
+    return NAN;
+}
+
+__host__ __device__ double colebrook_newton(double re, double rr) {
+    constexpr double two_over_ln10 = 2.0 / ln10;
+    constexpr double tolerance = 8.8817841970012523234e-16;
+    double y = 7.0;
+    for (int iteration = 0; iteration < 32; ++iteration) {
+        const double coefficient = 2.51 / re;
+        const double argument = rr / 3.7 + coefficient * y;
+        const double residual = y + two_over_ln10 * log(argument);
+        const double derivative = 1.0 + two_over_ln10 * coefficient / argument;
+        const double step = residual / derivative;
+        const double next = y - step;
+        if (!(next > 0.0) || !isfinite(next)) return NAN;
+        if (fabs(step) <= tolerance * fmax(1.0, fabs(next)))
+            return 1.0 / (next * next);
+        y = next;
+    }
+    return NAN;
+}
+
 __host__ __device__ Result swamee_jain_with_derivatives(double re, double rr) {
 #ifdef __CUDA_ARCH__
     const double re_power = exp2(0.9 * log2(re));
@@ -89,7 +123,9 @@ __global__ void evaluate_kernel(const double* re, const double* rr, Result* outp
         case 0: result.value = colebrook(r, rough); break;
         case 1: result = colebrook_with_derivatives(r, rough); break;
         case 2: result.value = swamee_jain(r, rough); break;
-        default: result = swamee_jain_with_derivatives(r, rough); break;
+        case 3: result = swamee_jain_with_derivatives(r, rough); break;
+        case 4: result.value = colebrook_fixed_point(r, rough); break;
+        default: result.value = colebrook_newton(r, rough); break;
     }
     output[i] = result;
 }
@@ -148,6 +184,12 @@ Result host_colebrook(double re, double rr) { return {colebrook(re, rr), 0.0, 0.
 Result host_colebrook_grad(double re, double rr) { return colebrook_with_derivatives(re, rr); }
 Result host_swamee(double re, double rr) { return {swamee_jain(re, rr), 0.0, 0.0}; }
 Result host_swamee_grad(double re, double rr) { return swamee_jain_with_derivatives(re, rr); }
+Result host_fixed_point(double re, double rr) {
+    return {friction::colebrook_fixed_point(re, rr).darcy_friction_factor, 0.0, 0.0};
+}
+Result host_newton(double re, double rr) {
+    return {friction::colebrook_newton(re, rr).darcy_friction_factor, 0.0, 0.0};
+}
 
 void benchmark(const char* label, int mode, HostFunction host_fn,
                const std::vector<double>& re, const std::vector<double>& rr,
@@ -255,6 +297,8 @@ int main() {
         benchmark("Colebrook + gradients", 1, host_colebrook_grad, re, rr, d_re, d_rr, d_out, output, count);
         benchmark("Swamee-Jain primal", 2, host_swamee, re, rr, d_re, d_rr, d_out, output, count);
         benchmark("Swamee-Jain + gradients", 3, host_swamee_grad, re, rr, d_re, d_rr, d_out, output, count);
+        benchmark("Colebrook fixed point", 4, host_fixed_point, re, rr, d_re, d_rr, d_out, output, count);
+        benchmark("Colebrook Newton", 5, host_newton, re, rr, d_re, d_rr, d_out, output, count);
     }
 
     cudaFree(d_re);

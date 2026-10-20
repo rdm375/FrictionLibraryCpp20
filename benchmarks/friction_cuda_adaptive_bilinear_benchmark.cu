@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Richard Myers
+
 #include "friction/adaptive_bilinear_tensor_surrogate.hpp"
 #include <cuda_runtime.h>
 

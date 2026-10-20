@@ -1,5 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Richard Myers
+
 cmake_minimum_required(VERSION 3.20)
-project(friction_factor_cpp20 VERSION 1.1.0 LANGUAGES CXX)
+project(friction_factor_cpp20
+    VERSION 1.3.0
+    DESCRIPTION "Header-only C++20 Darcy friction factor library"
+    LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -11,10 +17,13 @@ target_include_directories(friction INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(friction INTERFACE cxx_std_20)
 
-add_executable(friction_example examples/friction_example.cpp)
-target_link_libraries(friction_example PRIVATE friction::friction)
+option(FRICTION_BUILD_EXAMPLES "Build usage examples" ON)
+if(FRICTION_BUILD_EXAMPLES)
+    add_executable(friction_example examples/friction_example.cpp)
+    target_link_libraries(friction_example PRIVATE friction::friction)
+endif()
 
-option(FRICTION_BUILD_BENCHMARKS "Build CPU throughput benchmark" ON)
+option(FRICTION_BUILD_BENCHMARKS "Build CPU throughput benchmarks" OFF)
 if(FRICTION_BUILD_BENCHMARKS)
     add_executable(friction_primal_benchmark benchmarks/friction_primal_benchmark.cpp)
     target_link_libraries(friction_primal_benchmark PRIVATE friction::friction)
@@ -37,6 +46,8 @@ option(FRICTION_BUILD_CUDA_BENCHMARK "Build optional CUDA vs CPU benchmark" OFF)
 if(FRICTION_BUILD_CUDA_BENCHMARK)
     enable_language(CUDA)
     add_executable(friction_cuda_benchmark benchmarks/friction_cuda_benchmark.cu)
+    target_include_directories(friction_cuda_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
     set_target_properties(friction_cuda_benchmark PROPERTIES
         CUDA_STANDARD 17
         CUDA_STANDARD_REQUIRED YES
@@ -112,26 +123,6 @@ if(BUILD_TESTING)
         COMMAND test_adaptive_bilinear_tensor_surrogate)
 endif()
 
-configure_package_config_file(
-    cmake/frictionConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfigVersion.cmake
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion)
-
-install(TARGETS friction EXPORT frictionTargets)
-install(DIRECTORY include/friction DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(EXPORT frictionTargets
-    FILE frictionTargets.cmake
-    NAMESPACE friction::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
-
 option(FRICTION_ENABLE_ENZYME_AD "Build Enzyme-generated derivative support" OFF)
 set(FRICTION_ENZYME_PLUGIN "" CACHE FILEPATH "Path to the ClangEnzyme LLVM plugin matching the selected Clang")
 
@@ -146,13 +137,52 @@ if(FRICTION_ENABLE_ENZYME_AD)
     add_library(friction_enzyme_ad STATIC src/enzyme_derivatives.cpp)
     target_link_libraries(friction_enzyme_ad PUBLIC friction::friction)
     target_compile_options(friction_enzyme_ad PRIVATE
-        -O3 -march=native "-fplugin=${FRICTION_ENZYME_PLUGIN}")
+        -O3 "-fplugin=${FRICTION_ENZYME_PLUGIN}")
 
-    add_executable(test_enzyme_derivatives tests/test_enzyme_derivatives.cpp)
-    target_link_libraries(test_enzyme_derivatives PRIVATE friction_enzyme_ad)
-    add_test(NAME enzyme_derivatives COMMAND test_enzyme_derivatives)
+    if(BUILD_TESTING)
+        add_executable(test_enzyme_derivatives tests/test_enzyme_derivatives.cpp)
+        target_link_libraries(test_enzyme_derivatives PRIVATE friction_enzyme_ad)
+        add_test(NAME enzyme_derivatives COMMAND test_enzyme_derivatives)
+    endif()
 
-    add_executable(friction_cpu_benchmark benchmarks/friction_cpu_benchmark.cpp)
-    target_link_libraries(friction_cpu_benchmark PRIVATE friction_enzyme_ad)
-    target_compile_options(friction_cpu_benchmark PRIVATE -O3 -march=native)
+    if(FRICTION_BUILD_BENCHMARKS)
+        add_executable(friction_cpu_benchmark benchmarks/friction_cpu_benchmark.cpp)
+        target_link_libraries(friction_cpu_benchmark PRIVATE friction_enzyme_ad)
+        target_compile_options(friction_cpu_benchmark PRIVATE -O3 -march=native)
+    endif()
 endif()
+
+configure_package_config_file(
+    cmake/frictionConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+
+install(TARGETS friction EXPORT frictionTargets)
+if(TARGET friction_enzyme_ad)
+    install(TARGETS friction_enzyme_ad EXPORT frictionTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+install(DIRECTORY include/friction DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES LICENSE
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/FrictionLibraryCpp20)
+install(EXPORT frictionTargets
+    FILE frictionTargets.cmake
+    NAMESPACE friction::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/frictionConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/friction)
+
+set(CPACK_PACKAGE_NAME "FrictionLibraryCpp20")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Header-only C++20 Darcy friction factor library")
+set(CPACK_PACKAGE_LICENSE "AGPL-3.0-only")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_GENERATOR "TGZ")
+include(CPack)
