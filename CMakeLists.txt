@@ -65,6 +65,14 @@ if(FRICTION_BUILD_CUDA_BENCHMARK)
         CUDA_STANDARD 17
         CUDA_STANDARD_REQUIRED YES
         CUDA_EXTENSIONS NO)
+    add_executable(friction_cuda_adaptive_bilinear_benchmark
+        benchmarks/friction_cuda_adaptive_bilinear_benchmark.cu)
+    target_include_directories(friction_cuda_adaptive_bilinear_benchmark
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(friction_cuda_adaptive_bilinear_benchmark PROPERTIES
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED YES
+        CUDA_EXTENSIONS NO)
     add_executable(friction_cuda_linear_slice_benchmark
         benchmarks/friction_cuda_linear_slice_benchmark.cu)
     target_include_directories(friction_cuda_linear_slice_benchmark PRIVATE
@@ -96,6 +104,12 @@ if(BUILD_TESTING)
     add_executable(test_adaptive_tensor_surrogate tests/test_adaptive_tensor_surrogate.cpp)
     target_link_libraries(test_adaptive_tensor_surrogate PRIVATE friction::friction)
     add_test(NAME adaptive_tensor_surrogate COMMAND test_adaptive_tensor_surrogate)
+
+    add_executable(test_adaptive_bilinear_tensor_surrogate
+        tests/test_adaptive_bilinear_tensor_surrogate.cpp)
+    target_link_libraries(test_adaptive_bilinear_tensor_surrogate PRIVATE friction::friction)
+    add_test(NAME adaptive_bilinear_tensor_surrogate
+        COMMAND test_adaptive_bilinear_tensor_surrogate)
 endif()
 
 configure_package_config_file(
