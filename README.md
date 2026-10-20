@@ -8,8 +8,6 @@ A header-only C++20 library for Darcy-Weisbach pipe friction factors. It current
 
 All roughness inputs are relative roughness, \(k_s/D\), and results are Darcy friction factors (not Fanning factors).
 
-Start with [QUICKSTART.md](QUICKSTART.md) for build, test, install, packaging, and downstream-consumer commands.
-
 ## Correlations and API
 
 ```cpp
@@ -63,7 +61,8 @@ target_link_libraries(my_target PRIVATE friction::friction)
 ## Build and test
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -march=native"
 cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/friction_example
@@ -73,7 +72,7 @@ Tests compare Clamond against an independent bisection solution, verify Swamee-J
 
 `friction::analytic::darcy_friction_factor` returns the value and first derivatives with respect to Reynolds number and relative roughness. Its Colebrook derivatives use implicit differentiation of the Colebrook equation; the Swamee-Jain derivatives are differentiated in closed form. With `FRICTION_ENABLE_ENZYME_AD=ON`, the Enzyme test also cross-checks those derivatives against LLVM-generated reverse-mode derivatives.
 
-Include `<friction/batch.hpp>` for the batch APIs. They accept equal-length `std::span`s for Reynolds number, relative roughness, and output; input values are validated before output is written. The batch functions are serial and allocation-free. They reject output spans that overlap either input span. For multicore work, split the input and output spans into disjoint ranges and call them from separate threads.
+Include `<friction/batch.hpp>` for the batch APIs. They accept equal-length `std::span`s for Reynolds number, relative roughness, and output; all inputs are validated before any outputs are written. The batch functions are serial and allocation-free. For multicore work, split the input and output spans into disjoint ranges and call them from separate threads. Output spans must not overlap either input span.
 
 ## Derivatives with Enzyme and LLVM
 
@@ -118,15 +117,7 @@ Compare the implicit-equation solvers with:
 
 This benchmark uses the same turbulent input grid for Clamond, fixed point, Newton, Swamee-Jain, and the two analytic-gradient APIs. Gradient rows return the primal value and both partial derivatives from one function call.
 
-The solver benchmark compares the production simplified Colebrook derivative algebra and exp2(0.9*log2(Re)) evaluation against direct implicit-derivative and std::pow baselines. The faster formulation depends on compiler and CPU; build and run the benchmark on the deployment target before choosing a path. Results are not portable performance guarantees. The CUDA kernel also uses exp2/log2; CPU/GPU results are checked against tolerances by the CUDA benchmark.
-
-## License and commercial use
-
-This project is licensed under **GNU Affero General Public License version 3 only (AGPL-3.0-only)**. See [LICENSE](LICENSE) for the complete license text. Copyright: © 2026 FrictionLibraryCpp20 contributors.
-
-AGPL copyleft may require source code for covered modified or combined works to be made available under the license terms, including the network-use provision in section 13. The exact effect depends on how a product uses and distributes this header-only library.
-
-AGPL does **not** require royalties, a revenue share, or payment to the copyright holder. Organizations that need to keep a covered use proprietary can seek a separate commercial license from the copyright holder. That requires a separate agreement; this repository does not currently offer commercial terms or promise a particular fee. A commercial license can be granted only by the owner(s) of the relevant rights, so confirm ownership and contributor rights before offering one.
+The solver benchmark includes CPU-specific A/B candidates for the Colebrook gradient algebra and for computing `Re^0.9` with `exp2(0.9*log2(Re))`. On the Dell i7-6920HQ run, those candidates were slower than the production formulas: 10.54 vs. 11.35 M Colebrook gradient evaluations/s, 18.67 vs. 19.55 M Swamee-Jain evaluations/s, and 16.83 vs. 17.93 M Swamee-Jain gradient evaluations/s. Production therefore uses the conventional implicit derivative and `std::pow`; the benchmark retains the alternatives for testing other compilers and CPUs. The CUDA kernel keeps the `exp2`/`log2` implementation on device, while its CPU reference uses `pow`.
 
 ## Optional CUDA throughput experiment
 
@@ -141,6 +132,59 @@ cmake --build build-cuda --target friction_cuda_benchmark -j
 ./build-cuda/friction_cuda_benchmark
 ```
 
+To compare fixed-roughness Colebrook gradients with the prepared tensor slice on the GPU, build and run the separate 1M-input benchmark:
+
+```sh
+cmake --build build-cuda --target friction_cuda_surrogate_benchmark -j
+./build-cuda/friction_cuda_surrogate_benchmark
+```
+
+For the fixed-roughness one-dimensional slice experiment, build and run:
+
+```sh
+cmake --build build-cuda --target friction_cuda_linear_slice_benchmark -j
+./build-cuda/friction_cuda_linear_slice_benchmark
+```
+
+This benchmark adaptively builds a one-dimensional piecewise-linear Colebrook
+slice in `log(Re)`. It uses disagreement between the endpoint Taylor predictions
+and the interval interpolant, with direct midpoint checks for friction factor,
+`df/dRe`, and `df/d(k_s/D)`, to decide which intervals to split. The GPU uses a
+binary search over the resulting nonuniform knots, then evaluates the local
+linear function and its derivative channels. It reports sample/build time and
+coefficient upload separately from CPU/GPU evaluation, and checks all three
+outputs against direct Colebrook calculations. The slice is for one fixed
+relative roughness; rebuild it when that roughness changes. The roughness
+derivative channel supports local sensitivity at the prepared roughness.
+
+It reports CPU, resident GPU-kernel, and transfer-inclusive throughput. Transfer-inclusive prepared-slice timing includes uploading the slice for each roughness evaluation; table construction, roughness preparation, and initial axis upload are reported separately. The direct GPU Colebrook path matches the library's laminar branch and smooth transition from Re=2000 to 2300, so the direct and surrogate checks compare the same all-regime function. The executable checks GPU values and both derivatives against the CPU implementation.
+
 Set `CMAKE_CUDA_ARCHITECTURES` to the compute capability supported by the installed toolkit and GPU (for example, `52` for a device reporting compute capability 5.2). The program prints the detected GPU and capability. It uses ordinary IEEE math calls rather than CUDA fast-math flags. The elementwise comparison allows an absolute error of `2e-14` plus a relative error of `2e-11`; small last-bit differences can result from CPU and GPU math libraries.
 
 It uses a single large input batch and reports throughput including thread startup for the multithreaded cases. Results depend on CPU, compiler, and math-library vectorization; the batch interface enables easy chunking but does not promise SIMD or a particular scaling factor.
+
+## Experimental adaptive tensor surrogate
+
+`friction::surrogate::AdaptiveColebrookTensor` is an experimental two-input surrogate over Reynolds number and relative roughness. It interpolates `1/sqrt(f)` in normalized `log(Re)` and `log1p(relative_roughness / scale)` coordinates, returns the friction factor and both first derivatives, and falls back to the direct analytic correlation outside its configured domain. Sampling the all-regime Colebrook wrapper from `Re_min >= 2000` includes the current transition blend; inputs below the table range use the exact wrapper.
+
+For workloads that evaluate many Reynolds numbers at one pipe roughness, prepare a roughness slice once and reuse it:
+
+```cpp
+const auto roughness = table.prepare_roughness(relative_roughness);
+const auto result = roughness.evaluate(reynolds).derivatives;
+```
+
+The prepared evaluator caches the roughness coordinate and its derivative scale, then reduces each bicubic patch to a one-dimensional cubic in Reynolds number. It returns the same value and both physical derivatives as `evaluate(re, rr)`. Keep the source table alive and do not rebuild it while a prepared slice is in use.
+
+For a full two-input GPU interpolant, build and run:
+
+```sh
+cmake --build build-cuda --target friction_cuda_bilinear_benchmark -j
+./build-cuda/friction_cuda_bilinear_benchmark
+```
+
+This experiment samples the turbulent Colebrook surface on a `1025 x 1025` grid in `(log(Re), log1p(Re*rr/80))` coordinates, then converts the samples into cell-local bilinear polynomial coefficients. The roughness coordinate follows the changing roughness sensitivity as Reynolds number varies. The GPU evaluates this piecewise bilinear interpolant function and its two physical derivatives. It uses the exact library wrapper below `Re=2300` to retain the transition blend, then interpolates for `Re >= 2300`. Sample/coefficient construction and coefficient upload are timed separately from resident kernel and transfer-inclusive evaluation. Accuracy is checked against direct GPU Colebrook using per-output absolute-plus-relative tolerances, and the executable returns failure if any target is missed.
+
+The builder begins with a 3-by-3 tensor grid, uses corner Taylor-model disagreement plus direct cell-center checks to mark intervals for refinement, and constructs bicubic Hermite patches. Mixed derivatives at nodes are estimated from the analytic first derivatives. The table uses adaptively placed axis knots but currently stores the full Cartesian tensor product; it is a validated baseline for a future sparse hierarchical representation. Grid generation is CPU-based. Its refinement indicator is not a certified error bound, so validate values and sensitivities on independent points in the operating domain.
+
+Run `friction_surrogate_benchmark` to measure one-time table construction and roughness-slice preparation separately from evaluation. It reports medians of five passes for a seeded random `(Re, rr)` batch, the same Reynolds samples at fixed roughness, and the prepared roughness slice. The default grid has 94,556 nodes and uses about 15.78 MiB. Results are CPU-specific; use the benchmark on the target machine. The table currently serves as a roughness-calibration and interpolation experiment; the full tensor storage is the current baseline, with a genuinely sparse hierarchical representation and batched GPU generation as follow-up work.
